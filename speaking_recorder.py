@@ -161,20 +161,36 @@ def recorder_and_save_component(set_no: int, student_name: str, key_id: str):
     let sec_{safe_id} = 0;
     let latestB64_{safe_id} = "";
     let latestMime_{safe_id} = "audio/webm";
+    let readySent_{safe_id} = false;
 
-    function sendToStreamlit_{safe_id}(payload) {{
-        window.parent.postMessage({{
-            isStreamlitMessage: true,
-            type: "streamlit:setComponentValue",
-            value: payload
-        }}, "*");
+    function postMsg_{safe_id}(msg) {{
+        window.parent.postMessage(Object.assign({{ isStreamlitMessage: true }}, msg), "*");
     }}
 
-    window.addEventListener("message", function(event) {{
-        if (event.data && event.data.type === "streamlit:render") {{
-            sendToStreamlit_{safe_id}(null);
+    function setCompValue_{safe_id}(val) {{
+        postMsg_{safe_id}({{
+            type: "streamlit:setComponentValue",
+            value: val,
+            dataType: "json"
+        }});
+    }}
+
+    function notifyReady_{safe_id}() {{
+        if (!readySent_{safe_id}) {{
+            readySent_{safe_id} = true;
+            postMsg_{safe_id}({{
+                type: "streamlit:componentReady",
+                apiVersion: 1
+            }});
+            postMsg_{safe_id}({{
+                type: "streamlit:setFrameHeight",
+                height: 135
+            }});
         }}
-    }});
+    }}
+
+    window.addEventListener("load", notifyReady_{safe_id});
+    setTimeout(notifyReady_{safe_id}, 100);
 
     function fmt_{safe_id}(s) {{
         return String(Math.floor(s/60)).padStart(2,"0") + ":" + String(s%60).padStart(2,"0");
@@ -190,7 +206,7 @@ def recorder_and_save_component(set_no: int, student_name: str, key_id: str):
             clearInterval(iv_{safe_id});
             btn.textContent = "🎙️ Mic";
             btn.style.background = "#DC2626";
-            stat.textContent = "Recorded — tap Save Recording";
+            stat.textContent = "Processing audio...";
             return;
         }}
         try {{
@@ -209,7 +225,7 @@ def recorder_and_save_component(set_no: int, student_name: str, key_id: str):
                 const reader = new FileReader();
                 reader.onloadend = () => {{
                     latestB64_{safe_id} = (reader.result || "").split(",")[1] || "";
-                    stat.textContent = "Ready to save — tap Save Recording";
+                    stat.textContent = latestB64_{safe_id} ? "Ready — tap Save Recording" : "Could not read audio";
                 }};
                 reader.readAsDataURL(blob);
             }};
@@ -235,18 +251,18 @@ def recorder_and_save_component(set_no: int, student_name: str, key_id: str):
             stat.textContent = "Tap Mic, speak, and tap Stop before Save Recording.";
             return;
         }}
-        stat.textContent = "Saving...";
-        sendToStreamlit_{safe_id}({{
+        setCompValue_{safe_id}({{
             set_no: {set_no},
             student: {json.dumps(clean_student)},
             mime: latestMime_{safe_id},
             b64: latestB64_{safe_id},
             ts: Date.now()
         }});
+        stat.textContent = "Sent to save!";
     }}
     </script>
     """
-    return components.html(html_code, height=130)
+    return components.html(html_code, height=135)
 
 
 if "sp_set_idx" not in st.session_state:
