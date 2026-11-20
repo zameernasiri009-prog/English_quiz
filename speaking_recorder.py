@@ -61,14 +61,26 @@ def ext_from_mime(mime: str) -> str:
     return ".webm"
 
 
+def iter_all_audio_files():
+    items = []
+    for root, _, files in os.walk(SAVE_DIR):
+        for fname in sorted(files):
+            full_path = os.path.join(root, fname)
+            if os.path.abspath(full_path) == os.path.abspath(BUNDLE_PATH):
+                continue
+            rel_path = os.path.relpath(full_path, SAVE_DIR)
+            parts = rel_path.split(os.sep)
+            student_folder = parts[0] if len(parts) > 1 else fname.split("_Set_")[0]
+            items.append((student_folder, fname, full_path))
+    return items
+
+
 def rebuild_combined_zip():
-    audio_files = [
-        f for f in sorted(os.listdir(SAVE_DIR))
-        if f != os.path.basename(BUNDLE_PATH) and os.path.isfile(os.path.join(SAVE_DIR, f))
-    ]
+    all_items = iter_all_audio_files()
     with zipfile.ZipFile(BUNDLE_PATH, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for fname in audio_files:
-            zf.write(os.path.join(SAVE_DIR, fname), arcname=fname)
+        for student_folder, fname, full_path in all_items:
+            arcname = os.path.join(student_folder, fname)
+            zf.write(full_path, arcname=arcname)
 
 
 def render_html(html_str: str, height: int | str = "content", alt: str = "Widget"):
@@ -122,84 +134,127 @@ def listen_speaker(lines: list[str], key_id: str):
     )
 
 
-def mic_box(set_no: int, key_id: str):
+def recorder_and_save_component(set_no: int, student_name: str, key_id: str):
     safe_id = re.sub(r"[^A-Za-z0-9_]", "_", key_id)
-    render_html(
-        f"""
-        <div style="font-family:sans-serif;background:#111827;border:1px solid #334155;border-radius:10px;padding:12px;">
-            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-                <button type="button" id="mbtn_{safe_id}" onclick="recToggle_{safe_id}()"
-                    style="background:#DC2626;color:#fff;border:none;padding:9px 16px;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;">
-                    🎙️ Mic
-                </button>
-                <span id="mstat_{safe_id}" style="color:#F8FAFC;font-size:13px;">Ready</span>
-                <span id="mtimer_{safe_id}" style="color:#FBBF24;font-size:13px;font-weight:700;">00:00</span>
-            </div>
-            <audio id="mplay_{safe_id}" controls style="width:100%;margin-top:10px;display:none;"></audio>
+    clean_student = sanitize_filename_part(student_name)
+    html_code = f"""
+    <div style="font-family:sans-serif;background:#111827;border:1px solid #334155;border-radius:10px;padding:12px;">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <button type="button" id="mbtn_{safe_id}" onclick="recToggle_{safe_id}()"
+                style="background:#DC2626;color:#fff;border:none;padding:9px 16px;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;">
+                🎙️ Mic
+            </button>
+            <button type="button" id="sbtn_{safe_id}" onclick="sendSave_{safe_id}()"
+                style="background:#059669;color:#fff;border:none;padding:9px 18px;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;">
+                💾 Save Recording
+            </button>
+            <span id="mstat_{safe_id}" style="color:#F8FAFC;font-size:13px;">Ready</span>
+            <span id="mtimer_{safe_id}" style="color:#FBBF24;font-size:13px;font-weight:700;">00:00</span>
         </div>
-        <script>
-        let rec_{safe_id} = null, stream_{safe_id} = null, chunks_{safe_id} = [], iv_{safe_id} = null, sec_{safe_id} = 0;
-        function fmt_{safe_id}(s) {{
-            return String(Math.floor(s/60)).padStart(2,"0") + ":" + String(s%60).padStart(2,"0");
+        <audio id="mplay_{safe_id}" controls style="width:100%;margin-top:10px;display:none;"></audio>
+    </div>
+    <script>
+    let rec_{safe_id} = null;
+    let stream_{safe_id} = null;
+    let chunks_{safe_id} = [];
+    let iv_{safe_id} = null;
+    let sec_{safe_id} = 0;
+    let latestB64_{safe_id} = "";
+    let latestMime_{safe_id} = "audio/webm";
+
+    function sendToStreamlit_{safe_id}(payload) {{
+        window.parent.postMessage({{
+            isStreamlitMessage: true,
+            type: "streamlit:setComponentValue",
+            value: payload
+        }}, "*");
+    }}
+
+    window.addEventListener("message", function(event) {{
+        if (event.data && event.data.type === "streamlit:render") {{
+            sendToStreamlit_{safe_id}(null);
         }}
-        async function recToggle_{safe_id}() {{
-            const btn = document.getElementById("mbtn_{safe_id}");
-            const stat = document.getElementById("mstat_{safe_id}");
-            const timer = document.getElementById("mtimer_{safe_id}");
-            const player = document.getElementById("mplay_{safe_id}");
-            if (rec_{safe_id} && rec_{safe_id}.state === "recording") {{
-                rec_{safe_id}.stop();
-                clearInterval(iv_{safe_id});
-                btn.textContent = "🎙️ Mic";
-                btn.style.background = "#DC2626";
-                stat.textContent = "Recorded — now tap Save";
-                return;
-            }}
-            try {{
-                stream_{safe_id} = await navigator.mediaDevices.getUserMedia({{ audio: true }});
-                chunks_{safe_id} = [];
-                rec_{safe_id} = new MediaRecorder(stream_{safe_id});
-                rec_{safe_id}.ondataavailable = e => {{ if (e.data && e.data.size > 0) chunks_{safe_id}.push(e.data); }};
-                rec_{safe_id}.onstop = () => {{
-                    const mime = rec_{safe_id}.mimeType || "audio/webm";
-                    const blob = new Blob(chunks_{safe_id}, {{ type: mime }});
-                    player.src = URL.createObjectURL(blob);
-                    player.style.display = "block";
-                    stream_{safe_id}.getTracks().forEach(t => t.stop());
-                    const reader = new FileReader();
-                    reader.onloadend = () => {{
-                        const b64 = (reader.result || "").split(",")[1] || "";
-                        if (!window.top.__savedVoice) window.top.__savedVoice = {{}};
-                        window.top.__savedVoice[{set_no}] = {{ base64: b64, mime: mime }};
-                    }};
-                    reader.readAsDataURL(blob);
+    }});
+
+    function fmt_{safe_id}(s) {{
+        return String(Math.floor(s/60)).padStart(2,"0") + ":" + String(s%60).padStart(2,"0");
+    }}
+
+    async function recToggle_{safe_id}() {{
+        const btn = document.getElementById("mbtn_{safe_id}");
+        const stat = document.getElementById("mstat_{safe_id}");
+        const timer = document.getElementById("mtimer_{safe_id}");
+        const player = document.getElementById("mplay_{safe_id}");
+        if (rec_{safe_id} && rec_{safe_id}.state === "recording") {{
+            rec_{safe_id}.stop();
+            clearInterval(iv_{safe_id});
+            btn.textContent = "🎙️ Mic";
+            btn.style.background = "#DC2626";
+            stat.textContent = "Recorded — tap Save Recording";
+            return;
+        }}
+        try {{
+            stream_{safe_id} = await navigator.mediaDevices.getUserMedia({{ audio: true }});
+            chunks_{safe_id} = [];
+            latestB64_{safe_id} = "";
+            rec_{safe_id} = new MediaRecorder(stream_{safe_id});
+            rec_{safe_id}.ondataavailable = e => {{ if (e.data && e.data.size > 0) chunks_{safe_id}.push(e.data); }};
+            rec_{safe_id}.onstop = () => {{
+                const mime = rec_{safe_id}.mimeType || "audio/webm";
+                latestMime_{safe_id} = mime;
+                const blob = new Blob(chunks_{safe_id}, {{ type: mime }});
+                player.src = URL.createObjectURL(blob);
+                player.style.display = "block";
+                stream_{safe_id}.getTracks().forEach(t => t.stop());
+                const reader = new FileReader();
+                reader.onloadend = () => {{
+                    latestB64_{safe_id} = (reader.result || "").split(",")[1] || "";
+                    stat.textContent = "Ready to save — tap Save Recording";
                 }};
-                rec_{safe_id}.start();
-                sec_{safe_id} = 0;
-                timer.textContent = "00:00";
-                clearInterval(iv_{safe_id});
-                iv_{safe_id} = setInterval(() => {{
-                    sec_{safe_id} += 1;
-                    timer.textContent = fmt_{safe_id}(sec_{safe_id});
-                }}, 1000);
-                btn.textContent = "⏹ Stop";
-                btn.style.background = "#059669";
-                stat.textContent = "Recording...";
-            }} catch (e) {{
-                stat.textContent = "Mic error: allow microphone permission";
-            }}
+                reader.readAsDataURL(blob);
+            }};
+            rec_{safe_id}.start();
+            sec_{safe_id} = 0;
+            timer.textContent = "00:00";
+            clearInterval(iv_{safe_id});
+            iv_{safe_id} = setInterval(() => {{
+                sec_{safe_id} += 1;
+                timer.textContent = fmt_{safe_id}(sec_{safe_id});
+            }}, 1000);
+            btn.textContent = "⏹ Stop";
+            btn.style.background = "#059669";
+            stat.textContent = "Recording...";
+        }} catch (e) {{
+            stat.textContent = "Mic error: allow microphone permission";
         }}
-        </script>
-        """,
-        height="content",
-        alt="Mic recorder",
-    )
+    }}
+
+    function sendSave_{safe_id}() {{
+        const stat = document.getElementById("mstat_{safe_id}");
+        if (!latestB64_{safe_id}) {{
+            stat.textContent = "Tap Mic, speak, and tap Stop before Save Recording.";
+            return;
+        }}
+        stat.textContent = "Saving...";
+        sendToStreamlit_{safe_id}({{
+            set_no: {set_no},
+            student: {json.dumps(clean_student)},
+            mime: latestMime_{safe_id},
+            b64: latestB64_{safe_id},
+            ts: Date.now()
+        }});
+    }}
+    </script>
+    """
+    return components.html(html_code, height=130)
 
 
 if "sp_set_idx" not in st.session_state:
     st.session_state.sp_set_idx = 0
 if "last_saved_msg" not in st.session_state:
     st.session_state.last_saved_msg = ""
+if "last_processed_ts" not in st.session_state:
+    st.session_state.last_processed_ts = None
 
 st.title("🎙️ Speaking Practice Recorder")
 student_name = st.text_input("Your Name:", placeholder="Write your name here...")
@@ -209,69 +264,39 @@ set_no, qs = SPEAKING_SETS[set_idx]
 
 st.progress((set_idx + 1) / len(SPEAKING_SETS), text=f"Set {set_no} of {len(SPEAKING_SETS)}")
 st.subheader(f"Set {set_no}")
-st.caption("Answer each question in one sentence, record your voice, and tap Save.")
+st.caption("Answer each question in one sentence, record your voice, and tap Save Recording.")
 
 for idx, q in enumerate(qs, start=1):
     st.markdown(f"**{idx}. {html.escape(q)}**")
 
 listen_speaker(qs, key_id=f"spk_{set_no}")
-mic_box(set_no=set_no, key_id=f"mic_{set_no}")
+comp_val = recorder_and_save_component(set_no=set_no, student_name=student_name, key_id=f"rec_{set_no}")
 
-# Bridge recorded audio from browser session into Streamlit query/state or hidden text bridge
-bridge_data = st.query_params.get("audio_b64", "")
-bridge_mime = st.query_params.get("audio_mime", "audio/webm")
-bridge_student = st.query_params.get("student_name", "")
-bridge_set = st.query_params.get("save_set", "")
+if isinstance(comp_val, dict) and comp_val.get("b64"):
+    ts_val = comp_val.get("ts")
+    if ts_val != st.session_state.last_processed_ts:
+        st.session_state.last_processed_ts = ts_val
+        clean_student = sanitize_filename_part(comp_val.get("student") or student_name)
+        target_set = int(comp_val.get("set_no") or set_no)
+        ext = ext_from_mime(comp_val.get("mime") or "audio/webm")
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-if bridge_data and bridge_set == str(set_no):
-    clean_student = sanitize_filename_part(bridge_student or student_name)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    ext = ext_from_mime(bridge_mime)
-    out_name = f"{clean_student}_Set_{set_no:02d}_{stamp}{ext}"
-    out_path = os.path.join(SAVE_DIR, out_name)
-    try:
-        raw_bytes = base64.b64decode(bridge_data)
-        with open(out_path, "wb") as f:
-            f.write(raw_bytes)
-        rebuild_combined_zip()
-        st.session_state.last_saved_msg = f"Saved `{out_name}` and updated `all_speaking_recordings.zip`."
-    except Exception as e:
-        st.session_state.last_saved_msg = f"Could not save audio: {e}"
-    st.query_params.clear()
-    st.rerun()
+        student_dir = os.path.join(SAVE_DIR, clean_student)
+        os.makedirs(student_dir, exist_ok=True)
+        out_name = f"{clean_student}_Set_{target_set:02d}_{stamp}{ext}"
+        out_path = os.path.join(student_dir, out_name)
 
-safe_save_id = re.sub(r"[^A-Za-z0-9_]", "_", f"save_{set_no}")
-clean_current_student = sanitize_filename_part(student_name)
-render_html(
-    f"""
-    <div style="display:flex;align-items:center;gap:10px;font-family:sans-serif;margin-top:4px;">
-        <button type="button" onclick="triggerSave_{safe_save_id}()"
-            style="background:#059669;color:#fff;border:none;padding:10px 20px;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;">
-            💾 Save Recording
-        </button>
-        <span id="smsg_{safe_save_id}" style="color:#F87171;font-size:13px;font-weight:600;"></span>
-    </div>
-    <script>
-    function triggerSave_{safe_save_id}() {{
-        const msg = document.getElementById("smsg_{safe_save_id}");
-        const store = (window.top && window.top.__savedVoice) ? window.top.__savedVoice[{set_no}] : null;
-        if (!store || !store.base64) {{
-            msg.textContent = "Tap Mic, speak, and tap Stop before Save Recording.";
-            return;
-        }}
-        const targetWin = window.top || window;
-        const url = new URL(targetWin.location.href);
-        url.searchParams.set("save_set", String({set_no}));
-        url.searchParams.set("student_name", {json.dumps(clean_current_student)});
-        url.searchParams.set("audio_mime", store.mime || "audio/webm");
-        url.searchParams.set("audio_b64", store.base64);
-        targetWin.location.assign(url.toString());
-    }}
-    </script>
-    """,
-    height=48,
-    alt="Save recording button",
-)
+        try:
+            raw_bytes = base64.b64decode(comp_val["b64"])
+            with open(out_path, "wb") as f:
+                f.write(raw_bytes)
+            rebuild_combined_zip()
+            st.session_state.last_saved_msg = (
+                f"Saved `{out_name}` inside `recordings/{clean_student}/` and updated `all_speaking_recordings.zip`."
+            )
+            st.rerun()
+        except Exception as e:
+            st.session_state.last_saved_msg = f"Could not save audio: {e}"
 
 if st.session_state.last_saved_msg:
     st.success(st.session_state.last_saved_msg)
@@ -286,27 +311,28 @@ with col_next:
         st.session_state.sp_set_idx = min(len(SPEAKING_SETS) - 1, set_idx + 1)
         st.rerun()
 
-saved_files = [
-    f for f in sorted(os.listdir(SAVE_DIR), reverse=True)
-    if f != os.path.basename(BUNDLE_PATH) and os.path.isfile(os.path.join(SAVE_DIR, f))
-]
+all_recordings = iter_all_audio_files()
 
-if os.path.exists(BUNDLE_PATH):
+if os.path.exists(BUNDLE_PATH) and all_recordings:
     st.divider()
     with open(BUNDLE_PATH, "rb") as zf_in:
         st.download_button(
-            label="📦 Download All Recordings Together (ZIP)",
+            label="📦 Download All Student Recordings (ZIP)",
             data=zf_in.read(),
             file_name="all_speaking_recordings.zip",
             mime="application/zip",
         )
 
-if saved_files:
-    st.markdown("### Saved Recordings (Review)")
-    filter_name = st.text_input("Filter by student name:", placeholder="Type a name to filter...")
-    for fname in saved_files:
-        if filter_name.strip() and filter_name.strip().lower() not in fname.lower():
+if all_recordings:
+    st.markdown("### Saved Recordings by Student")
+    student_names = sorted({item[0] for item in all_recordings})
+    selected_student = st.selectbox("Select a student to check their recordings:", ["All Students"] + student_names)
+
+    for s_name in student_names:
+        if selected_student != "All Students" and s_name != selected_student:
             continue
-        fpath = os.path.join(SAVE_DIR, fname)
-        st.markdown(f"**{html.escape(fname)}**")
-        st.audio(fpath)
+        s_files = [item for item in all_recordings if item[0] == s_name]
+        with st.expander(f"🧑 {s_name} ({len(s_files)} recording{'s' if len(s_files) != 1 else ''})", expanded=(selected_student != "All Students")):
+            for _, fname, fpath in reversed(s_files):
+                st.markdown(f"**{html.escape(fname)}**")
+                st.audio(fpath)
