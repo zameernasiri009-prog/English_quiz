@@ -158,31 +158,42 @@ def mic_recorder_widget(set_no: int, key_id: str):
         }}
 
         function findAudioPayloadInput_{safe_id}() {{
-            const doc = window.parent ? window.parent.document : document;
-            const inputs = doc.querySelectorAll('input[aria-label="AUDIO_PAYLOAD_BRIDGE"]');
-            return inputs.length > 0 ? inputs[0] : null;
+            try {{
+                const doc = window.parent ? window.parent.document : document;
+                const inputs = doc.querySelectorAll('input[aria-label="AUDIO_PAYLOAD_BRIDGE"]');
+                return inputs.length > 0 ? inputs[0] : null;
+            }} catch (e) {{
+                return null;
+            }}
         }}
 
         function setReactInputValue_{safe_id}(el, nextVal) {{
-            if (!el) return;
-            const prevVal = el.value;
-            const proto = window.parent && window.parent.HTMLInputElement
-                ? window.parent.HTMLInputElement.prototype
-                : HTMLInputElement.prototype;
-            const nativeSetter = Object.getOwnPropertyDescriptor(proto, "value").set;
-            nativeSetter.call(el, nextVal);
-            if (el._valueTracker) {{
-                el._valueTracker.setValue(prevVal);
+            if (!el) return false;
+            try {{
+                const prevVal = el.value;
+                const proto = window.parent && window.parent.HTMLInputElement
+                    ? window.parent.HTMLInputElement.prototype
+                    : HTMLInputElement.prototype;
+                const nativeSetter = Object.getOwnPropertyDescriptor(proto, "value").set;
+                nativeSetter.call(el, nextVal);
+                if (el._valueTracker) {{
+                    el._valueTracker.setValue(prevVal);
+                }}
+                el.focus();
+                el.dispatchEvent(new Event("input", {{ bubbles: true }}));
+                el.dispatchEvent(new Event("change", {{ bubbles: true }}));
+                el.blur();
+                return true;
+            }} catch (e) {{
+                return false;
             }}
-            el.dispatchEvent(new Event("input", {{ bubbles: true }}));
-            el.dispatchEvent(new Event("change", {{ bubbles: true }}));
         }}
 
         function writeAudioBridge_{safe_id}(b64, mime) {{
             const target = findAudioPayloadInput_{safe_id}();
-            if (!target) return;
+            if (!target) return false;
             const val = b64 ? JSON.stringify({{ set_no: {set_no}, b64: b64, mime: mime }}) : "";
-            setReactInputValue_{safe_id}(target, val);
+            return setReactInputValue_{safe_id}(target, val);
         }}
 
         async function recToggle_{safe_id}() {{
@@ -213,8 +224,14 @@ def mic_recorder_widget(set_no: int, key_id: str):
                     const reader = new FileReader();
                     reader.onloadend = () => {{
                         const b64 = (reader.result || "").split(",")[1] || "";
-                        writeAudioBridge_{safe_id}(b64, mime);
-                        stat.textContent = b64 ? "Recorded — click 💾 Save Recording below" : "Could not read audio";
+                        if (!b64) {{
+                            stat.textContent = "Could not read audio";
+                            return;
+                        }}
+                        const ok = writeAudioBridge_{safe_id}(b64, mime);
+                        stat.textContent = ok
+                            ? "Audio ready — tap Save Recording below"
+                            : "Bridge blocked by browser frame";
                     }};
                     reader.readAsDataURL(blob);
                 }};
@@ -279,7 +296,7 @@ if st.button("💾 Save Recording", type="primary", key=f"save_btn_{set_no}"):
 
     if not payload_data or not payload_data.get("b64"):
         st.session_state.last_error_msg = (
-            "No recording captured yet. Tap 🎙️ Mic, speak, tap ⏹ Stop, and then click 💾 Save Recording."
+            "No recording captured yet. Tap 🎙️ Mic, speak, tap ⏹ Stop, wait for 'Audio ready', and then click 💾 Save Recording."
         )
     else:
         clean_student = sanitize_filename_part(student_name)
