@@ -83,9 +83,39 @@ def iter_all_audio_files():
 
 def rebuild_combined_zip():
     all_items = iter_all_audio_files()
+    if not all_items:
+        if os.path.exists(BUNDLE_PATH):
+            os.remove(BUNDLE_PATH)
+        return
     with zipfile.ZipFile(BUNDLE_PATH, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for _, student_folder, fname, full_path in all_items:
             zf.write(full_path, arcname=os.path.join(student_folder, fname))
+
+
+def delete_recording_file(fpath: str):
+    if os.path.exists(fpath):
+        os.remove(fpath)
+    parent_dir = os.path.dirname(fpath)
+    if (
+        os.path.isdir(parent_dir)
+        and os.path.abspath(parent_dir) != os.path.abspath(SAVE_DIR)
+        and not os.listdir(parent_dir)
+    ):
+        os.rmdir(parent_dir)
+    rebuild_combined_zip()
+
+
+def clear_all_recordings():
+    for _, _, _, fpath in iter_all_audio_files():
+        if os.path.exists(fpath):
+            os.remove(fpath)
+    for root, dirs, _ in os.walk(SAVE_DIR, topdown=False):
+        for dname in dirs:
+            dpath = os.path.join(root, dname)
+            if not os.listdir(dpath):
+                os.rmdir(dpath)
+    if os.path.exists(BUNDLE_PATH):
+        os.remove(BUNDLE_PATH)
 
 
 def listen_speaker(lines: list[str], key_id: str):
@@ -379,17 +409,32 @@ st.divider()
 st.markdown(f"### Set {set_no} — All Student Recordings ({len(current_set_recordings)})")
 if current_set_recordings:
     for order_num, (_, s_name, fname, fpath) in enumerate(current_set_recordings, start=1):
-        st.markdown(f"**{order_num}. {html.escape(s_name)}** — `{html.escape(fname)}`")
+        hdr_col, del_col = st.columns([5, 1])
+        with hdr_col:
+            st.markdown(f"**{order_num}. {html.escape(s_name)}** — `{html.escape(fname)}`")
+        with del_col:
+            if st.button("🗑️ Delete", key=f"del_{set_no}_{fname}"):
+                delete_recording_file(fpath)
+                st.session_state.last_saved_msg = f"Deleted `{fname}`."
+                st.rerun()
         st.audio(fpath)
 else:
     st.caption(f"No voice clips saved for Set {set_no} yet. Record and click Save Recording to add the first one.")
 
-if os.path.exists(BUNDLE_PATH) and all_recordings:
+if all_recordings:
     st.divider()
-    with open(BUNDLE_PATH, "rb") as zf_in:
-        st.download_button(
-            label="📦 Download All Recordings Across All Sets (ZIP)",
-            data=zf_in.read(),
-            file_name="all_speaking_recordings.zip",
-            mime="application/zip",
-        )
+    if os.path.exists(BUNDLE_PATH):
+        with open(BUNDLE_PATH, "rb") as zf_in:
+            st.download_button(
+                label="📦 Download All Recordings Across All Sets (ZIP)",
+                data=zf_in.read(),
+                file_name="all_speaking_recordings.zip",
+                mime="application/zip",
+            )
+
+    with st.expander("🧹 Remove Test / Old Recordings"):
+        confirm_clear = st.checkbox("Yes, delete all saved recordings across all sets", key="confirm_clear_all")
+        if st.button("Delete All Recordings", disabled=not confirm_clear, key="clear_all_btn"):
+            clear_all_recordings()
+            st.session_state.last_saved_msg = "Cleared all saved recordings."
+            st.rerun()
