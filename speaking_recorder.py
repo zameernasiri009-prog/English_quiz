@@ -163,13 +163,26 @@ def mic_recorder_widget(set_no: int, key_id: str):
             return inputs.length > 0 ? inputs[0] : null;
         }}
 
+        function setReactInputValue_{safe_id}(el, nextVal) {{
+            if (!el) return;
+            const prevVal = el.value;
+            const proto = window.parent && window.parent.HTMLInputElement
+                ? window.parent.HTMLInputElement.prototype
+                : HTMLInputElement.prototype;
+            const nativeSetter = Object.getOwnPropertyDescriptor(proto, "value").set;
+            nativeSetter.call(el, nextVal);
+            if (el._valueTracker) {{
+                el._valueTracker.setValue(prevVal);
+            }}
+            el.dispatchEvent(new Event("input", {{ bubbles: true }}));
+            el.dispatchEvent(new Event("change", {{ bubbles: true }}));
+        }}
+
         function writeAudioBridge_{safe_id}(b64, mime) {{
             const target = findAudioPayloadInput_{safe_id}();
             if (!target) return;
-            const nativeSetter = Object.getOwnPropertyDescriptor(window.parent.HTMLInputElement.prototype, "value").set;
-            nativeSetter.call(target, JSON.stringify({{ set_no: {set_no}, b64: b64, mime: mime }}));
-            target.dispatchEvent(new Event("input", {{ bubbles: true }}));
-            target.dispatchEvent(new Event("change", {{ bubbles: true }}));
+            const val = b64 ? JSON.stringify({{ set_no: {set_no}, b64: b64, mime: mime }}) : "";
+            setReactInputValue_{safe_id}(target, val);
         }}
 
         async function recToggle_{safe_id}() {{
