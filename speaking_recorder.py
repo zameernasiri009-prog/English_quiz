@@ -3,6 +3,7 @@ import html
 import json
 import os
 import re
+import zipfile
 from datetime import datetime
 import streamlit as st
 import streamlit.components.v1 as components
@@ -14,6 +15,7 @@ st.set_page_config(
 )
 
 SAVE_DIR = "recordings"
+BUNDLE_PATH = os.path.join(SAVE_DIR, "all_speaking_recordings.zip")
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 SPEAKING_SETS = [
@@ -44,6 +46,29 @@ def sanitize_filename_part(text: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9_-]+", "_", (text or "").strip())
     cleaned = cleaned.strip("_")
     return cleaned or "Student"
+
+
+def ext_from_mime(mime: str) -> str:
+    m = (mime or "").lower()
+    if "mp4" in m or "m4a" in m:
+        return ".m4a"
+    if "ogg" in m:
+        return ".ogg"
+    if "wav" in m:
+        return ".wav"
+    if "mpeg" in m or "mp3" in m:
+        return ".mp3"
+    return ".webm"
+
+
+def rebuild_combined_zip():
+    audio_files = [
+        f for f in sorted(os.listdir(SAVE_DIR))
+        if f != os.path.basename(BUNDLE_PATH) and os.path.isfile(os.path.join(SAVE_DIR, f))
+    ]
+    with zipfile.ZipFile(BUNDLE_PATH, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for fname in audio_files:
+            zf.write(os.path.join(SAVE_DIR, fname), arcname=fname)
 
 
 def render_html(html_str: str, height: int | str = "content", alt: str = "Widget"):
@@ -192,35 +217,61 @@ for idx, q in enumerate(qs, start=1):
 listen_speaker(qs, key_id=f"spk_{set_no}")
 mic_box(set_no=set_no, key_id=f"mic_{set_no}")
 
-# Fallback / direct file upload option if browser bridge is blocked on a device
-uploaded_audio = st.file_uploader(
-    "Or attach/upload your recorded audio file (optional backup):",
-    type=["webm", "mp3", "wav", "m4a", "ogg"],
-    key=f"upload_{set_no}",
-)
+# Bridge recorded audio from browser session into Streamlit query/state or hidden text bridge
+bridge_data = st.query_params.get("audio_b64", "")
+bridge_mime = st.query_params.get("audio_mime", "audio/webm")
+bridge_student = st.query_params.get("student_name", "")
+bridge_set = st.query_params.get("save_set", "")
 
-if st.button("💾 Save Recording", type="primary", key=f"save_btn_{set_no}"):
-    clean_student = sanitize_filename_part(student_name)
+if bridge_data and bridge_set == str(set_no):
+    clean_student = sanitize_filename_part(bridge_student or student_name)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    saved = False
-
-    if uploaded_audio is not None:
-        ext = os.path.splitext(uploaded_audio.name)[1].lower() or ".webm"
-        out_name = f"{clean_student}_Set_{set_no:02d}_{stamp}{ext}"
-        out_path = os.path.join(SAVE_DIR, out_name)
+    ext = ext_from_mime(bridge_mime)
+    out_name = f"{clean_student}_Set_{set_no:02d}_{stamp}{ext}"
+    out_path = os.path.join(SAVE_DIR, out_name)
+    try:
+        raw_bytes = base64.b64decode(bridge_data)
         with open(out_path, "wb") as f:
-            f.write(uploaded_audio.getbuffer())
-        st.session_state.last_saved_msg = f"Saved recording as `{out_name}`."
-        saved = True
-    else:
-        st.session_state.last_saved_msg = (
-            f"Ready for `{clean_student}` (Set {set_no}). "
-            "If your mic recording doesn't attach automatically in your browser, use the audio upload box above and tap Save Recording."
-        )
-        saved = True
+            f.write(raw_bytes)
+        rebuild_combined_zip()
+        st.session_state.last_saved_msg = f"Saved `{out_name}` and updated `all_speaking_recordings.zip`."
+    except Exception as e:
+        st.session_state.last_saved_msg = f"Could not save audio: {e}"
+    st.query_params.clear()
+    st.rerun()
 
-    if saved:
-        st.rerun()
+safe_save_id = re.sub(r"[^A-Za-z0-9_]", "_", f"save_{set_no}")
+clean_current_student = sanitize_filename_part(student_name)
+render_html(
+    f"""
+    <div style="display:flex;align-items:center;gap:10px;font-family:sans-serif;margin-top:4px;">
+        <button type="button" onclick="triggerSave_{safe_save_id}()"
+            style="background:#059669;color:#fff;border:none;padding:10px 20px;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;">
+            💾 Save Recording
+        </button>
+        <span id="smsg_{safe_save_id}" style="color:#F87171;font-size:13px;font-weight:600;"></span>
+    </div>
+    <script>
+    function triggerSave_{safe_save_id}() {{
+        const msg = document.getElementById("smsg_{safe_save_id}");
+        const store = (window.top && window.top.__savedVoice) ? window.top.__savedVoice[{set_no}] : null;
+        if (!store || !store.base64) {{
+            msg.textContent = "Tap Mic, speak, and tap Stop before Save Recording.";
+            return;
+        }}
+        const targetWin = window.top || window;
+        const url = new URL(targetWin.location.href);
+        url.searchParams.set("save_set", String({set_no}));
+        url.searchParams.set("student_name", {json.dumps(clean_current_student)});
+        url.searchParams.set("audio_mime", store.mime || "audio/webm");
+        url.searchParams.set("audio_b64", store.base64);
+        targetWin.location.assign(url.toString());
+    }}
+    </script>
+    """,
+    height=48,
+    alt="Save recording button",
+)
 
 if st.session_state.last_saved_msg:
     st.success(st.session_state.last_saved_msg)
@@ -235,9 +286,22 @@ with col_next:
         st.session_state.sp_set_idx = min(len(SPEAKING_SETS) - 1, set_idx + 1)
         st.rerun()
 
-saved_files = sorted(os.listdir(SAVE_DIR), reverse=True)
-if saved_files:
+saved_files = [
+    f for f in sorted(os.listdir(SAVE_DIR), reverse=True)
+    if f != os.path.basename(BUNDLE_PATH) and os.path.isfile(os.path.join(SAVE_DIR, f))
+]
+
+if os.path.exists(BUNDLE_PATH):
     st.divider()
+    with open(BUNDLE_PATH, "rb") as zf_in:
+        st.download_button(
+            label="📦 Download All Recordings Together (ZIP)",
+            data=zf_in.read(),
+            file_name="all_speaking_recordings.zip",
+            mime="application/zip",
+        )
+
+if saved_files:
     st.markdown("### Saved Recordings (Review)")
     filter_name = st.text_input("Filter by student name:", placeholder="Type a name to filter...")
     for fname in saved_files:
