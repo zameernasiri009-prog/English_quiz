@@ -50,7 +50,7 @@ def sanitize_filename_part(text: str) -> str:
 
 def ext_from_mime(mime: str) -> str:
     m = (mime or "").lower()
-    if "mp4" in m or "m4a" in m:
+    if "mp4" in m or "m4a" in m or "aac" in m:
         return ".m4a"
     if "ogg" in m:
         return ".ogg"
@@ -196,46 +196,74 @@ def mic_recorder_widget(set_no: int, key_id: str):
             return setReactInputValue_{safe_id}(target, val);
         }}
 
+        function pickMimeType_{safe_id}() {{
+            if (typeof MediaRecorder === "undefined" || !MediaRecorder.isTypeSupported) return "";
+            const candidates = [
+                "audio/webm;codecs=opus",
+                "audio/webm",
+                "audio/mp4",
+                "audio/ogg;codecs=opus",
+                "audio/ogg",
+            ];
+            for (const t of candidates) {{
+                if (MediaRecorder.isTypeSupported(t)) return t;
+            }}
+            return "";
+        }}
+
         async function recToggle_{safe_id}() {{
             const btn = document.getElementById("mbtn_{safe_id}");
             const stat = document.getElementById("mstat_{safe_id}");
             const timer = document.getElementById("mtimer_{safe_id}");
             const player = document.getElementById("mplay_{safe_id}");
             if (rec_{safe_id} && rec_{safe_id}.state === "recording") {{
+                try {{ rec_{safe_id}.requestData(); }} catch (e) {{}}
                 rec_{safe_id}.stop();
                 clearInterval(iv_{safe_id});
                 btn.textContent = "🎙️ Mic";
                 btn.style.background = "#DC2626";
-                stat.textContent = "Preparing recording...";
+                stat.textContent = "Preparing audio...";
                 return;
             }}
             try {{
-                stream_{safe_id} = await navigator.mediaDevices.getUserMedia({{ audio: true }});
+                stream_{safe_id} = await navigator.mediaDevices.getUserMedia({{
+                    audio: {{ echoCancellation: true, noiseSuppression: true }}
+                }});
                 chunks_{safe_id} = [];
-                writeAudioBridge_{safe_id}("", "audio/webm");
-                rec_{safe_id} = new MediaRecorder(stream_{safe_id});
-                rec_{safe_id}.ondataavailable = e => {{ if (e.data && e.data.size > 0) chunks_{safe_id}.push(e.data); }};
+                writeAudioBridge_{safe_id}("", "");
+                const chosenMime = pickMimeType_{safe_id}();
+                rec_{safe_id} = chosenMime
+                    ? new MediaRecorder(stream_{safe_id}, {{ mimeType: chosenMime }})
+                    : new MediaRecorder(stream_{safe_id});
+                rec_{safe_id}.ondataavailable = e => {{
+                    if (e.data && e.data.size > 0) chunks_{safe_id}.push(e.data);
+                }};
                 rec_{safe_id}.onstop = () => {{
-                    const mime = rec_{safe_id}.mimeType || "audio/webm";
+                    const mime = rec_{safe_id}.mimeType || chosenMime || "audio/webm";
+                    const totalBytes = chunks_{safe_id}.reduce((acc, c) => acc + (c.size || 0), 0);
+                    stream_{safe_id}.getTracks().forEach(t => t.stop());
+                    if (!totalBytes) {{
+                        stat.textContent = "No sound frames captured — check mic & try again";
+                        return;
+                    }}
                     const blob = new Blob(chunks_{safe_id}, {{ type: mime }});
                     player.src = URL.createObjectURL(blob);
                     player.style.display = "block";
-                    stream_{safe_id}.getTracks().forEach(t => t.stop());
                     const reader = new FileReader();
                     reader.onloadend = () => {{
                         const b64 = (reader.result || "").split(",")[1] || "";
                         if (!b64) {{
-                            stat.textContent = "Could not read audio";
+                            stat.textContent = "Could not encode audio";
                             return;
                         }}
                         const ok = writeAudioBridge_{safe_id}(b64, mime);
                         stat.textContent = ok
-                            ? "Audio ready — tap Save Recording below"
+                            ? "Audio ready (" + Math.round(totalBytes / 1024) + " KB) — tap Save Recording"
                             : "Bridge blocked by browser frame";
                     }};
                     reader.readAsDataURL(blob);
                 }};
-                rec_{safe_id}.start();
+                rec_{safe_id}.start(250);
                 sec_{safe_id} = 0;
                 timer.textContent = "00:00";
                 clearInterval(iv_{safe_id});
@@ -311,13 +339,16 @@ if st.button("💾 Save Recording", type="primary", key=f"save_btn_{set_no}"):
 
         try:
             raw_bytes = base64.b64decode(payload_data["b64"])
-            with open(out_path, "wb") as f:
-                f.write(raw_bytes)
-            rebuild_combined_zip()
-            st.session_state.last_saved_msg = (
-                f"Saved `{clean_student}`'s voice clip for **Set {target_set}** (`{out_name}`)."
-            )
-            st.rerun()
+            if len(raw_bytes) < 64:
+                st.session_state.last_error_msg = "Recorded audio was too small or empty — please record again."
+            else:
+                with open(out_path, "wb") as f:
+                    f.write(raw_bytes)
+                rebuild_combined_zip()
+                st.session_state.last_saved_msg = (
+                    f"Saved `{clean_student}`'s voice clip for **Set {target_set}** (`{out_name}`, {len(raw_bytes)} bytes)."
+                )
+                st.rerun()
         except Exception as e:
             st.session_state.last_error_msg = f"Could not save audio: {e}"
 
